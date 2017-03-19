@@ -74,7 +74,7 @@ extern "C" {
 #define STLINK_SWDCLK_5KHZ_DIVISOR		798
 
 
-#define STLINK_SERIAL_SIZE 16
+#define STLINK_SERIAL_SIZE 256
 
 
 
