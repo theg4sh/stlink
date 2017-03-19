@@ -59,7 +59,7 @@ int main(int ac, char** av)
     if (o.devname != NULL) /* stlinkv1 */
         sl = stlink_v1_open(o.log_level, 1);
     else /* stlinkv2 */
-        sl = stlink_open_usb(o.log_level, 1, (uint8_t*)o.serial);
+        sl = stlink_open_usb(o.log_level, 1, &o.serial);
 
     if (sl == NULL)
         return -1;
@@ -71,14 +71,15 @@ int main(int ac, char** av)
     signal(SIGTERM, &cleanup);
     signal(SIGSEGV, &cleanup);
 
-    if (stlink_current_mode(sl) == STLINK_DEV_DFU_MODE) {
+    int curmode = stlink_current_mode(sl);
+    if (curmode == STLINK_DEV_DFU_MODE) {
         if (stlink_exit_dfu_mode(sl)) {
             printf("Failed to exit DFU mode\n");
             goto on_error;
         }
     }
 
-    if (stlink_current_mode(sl) != STLINK_DEV_DEBUG_MODE) {
+    if (curmode != STLINK_DEV_DEBUG_MODE) {
         if (stlink_enter_swd_mode(sl)) {
             printf("Failed to enter SWD mode\n");
             goto on_error;

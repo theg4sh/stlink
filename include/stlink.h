@@ -74,7 +74,7 @@ extern "C" {
 #define STLINK_SWDCLK_5KHZ_DIVISOR		798
 
 
-#define STLINK_SERIAL_SIZE 16
+#define STLINK_SERIAL_SIZE 256
 
 
 
@@ -133,9 +133,23 @@ typedef struct flash_loader {
         TRANSPORT_TYPE_INVALID
     };
 
-    typedef struct _stlink stlink_t;
+    typedef struct _stlink_serial stlink_serial_t;
+    typedef struct _stlink        stlink_t;
 
 #include "stlink/backend.h"
+
+    enum stlink_serial_format_type {
+        STSERIALF_UNKNOWN=0,
+        STSERIALF_BINARY,
+        STSERIALF_HEX,
+        STSERIALF_ASCII
+    };
+
+    struct _stlink_serial {
+        enum stlink_serial_format_type format;
+        size_t  size;
+        uint8_t *data;
+    };
 
     struct _stlink {
         struct _stlink_backend *backend;
@@ -153,8 +167,7 @@ typedef struct flash_loader {
         uint32_t chip_id;
         int core_stat;
 
-        uint8_t serial[STLINK_SERIAL_SIZE];
-        int serial_size;
+        stlink_serial_t serial;
 
         enum stlink_flash_type flash_type;
         stm32_addr_t flash_base;
@@ -228,7 +241,7 @@ typedef struct flash_loader {
     int stlink_fread(stlink_t* sl, const char* path, bool is_ihex, stm32_addr_t addr, size_t size);
     int stlink_load_device_params(stlink_t *sl);
 
-    int stlink_parse_serial(const char *serial, uint8_t *outserial);
+    int stlink_parse_serial(const char *serial, uint8_t *outserial, int *new_serial_size);
 
 #include "stlink/sg.h"
 #include "stlink/usb.h"

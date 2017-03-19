@@ -1,7 +1,7 @@
 #include "stlink.h"
 #include "stlink/chipid.h"
 
-static const struct stlink_chipid_params devices[] = {
+static const struct stlink_chipid_params stm32_devices[] = {
         {
             //RM0410 document was used to find these paramaters
             .chip_id = STLINK_CHIPID_STM32_F7XXXX,
@@ -457,16 +457,15 @@ static const struct stlink_chipid_params devices[] = {
             .bootrom_size = 0x1000
         },
 
-
  };
 
 const struct stlink_chipid_params *stlink_chipid_get_params(uint32_t chipid)
 {
     const struct stlink_chipid_params *params = NULL;
 
-    for (size_t n = 0; n < STLINK_ARRAY_SIZE(devices); n++) {
-        if (devices[n].chip_id == chipid) {
-            params = &devices[n];
+    for (size_t n = 0; n < STLINK_ARRAY_SIZE(stm32_devices); n++) {
+        if (stm32_devices[n].chip_id == chipid) {
+            params = &stm32_devices[n];
             break;
         }
     }

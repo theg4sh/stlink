@@ -13,7 +13,7 @@ struct flash_opts
 {
     enum flash_cmd cmd;
     const char* devname;
-    uint8_t serial[STLINK_SERIAL_SIZE];
+    stlink_serial_t serial;
     const char* filename;
     stm32_addr_t addr;
     size_t size;

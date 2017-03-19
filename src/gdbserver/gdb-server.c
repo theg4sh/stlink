@@ -37,8 +37,7 @@
 
 static stlink_t *connected_stlink = NULL;
 static bool semihosting = false;
-static bool serial_specified = false;
-static uint8_t serialnumber[STLINK_SERIAL_SIZE] = {0}; // XXX? Why was size 28?
+static stlink_serial_t serialnumber;
 
 static const char hex[] = "0123456789abcdef";
 
@@ -76,8 +75,8 @@ static stlink_t* do_connect(st_state_t *st) {
     stlink_t *ret = NULL;
     switch (st->stlink_version) {
         case 2:
-            if(serial_specified){
-                ret = stlink_open_usb(st->logging_level, st->reset, serialnumber);
+            if(serialnumber.size>0){
+                ret = stlink_open_usb(st->logging_level, st->reset, &serialnumber);
             }
             else{
                 ret = stlink_open_usb(st->logging_level, st->reset, NULL);
@@ -135,6 +134,7 @@ int parse_options(int argc, char** argv, st_state_t *st) {
     int option_index = 0;
     int c;
     int q;
+    stlink_serial_t sst;
     while ((c = getopt_long(argc, argv, "hv::s:1p:mn", long_options, &option_index)) != -1) {
         switch (c) {
             case 0:
@@ -182,11 +182,11 @@ int parse_options(int argc, char** argv, st_state_t *st) {
                 semihosting = true;
                 break;
             case SERIAL_OPTION:
-                if (stlink_parse_serial(optarg, serialnumber) == 0) {
-                    /* XXX? Will it be correctly to set serial number direct
-                       into st->serial instead of global var serialnumber? */
+                sst.format = STSERIALF_HEX;
+                sst.data   = (uint8_t*)optarg;
+                sst.size   = strlen(optarg);
+                if (stlink_serial_convert(&sst, &serialnumber, STSERIALF_BINARY) == -1) {
                     printf("use serial %s\n",optarg);
-                    serial_specified = true;
                 } else {
                     fprintf(stderr, "Can't set serial %s\n", optarg);
                     exit(EXIT_FAILURE);
@@ -219,7 +219,7 @@ int main(int argc, char** argv) {
     printf("st-util %s\n", STLINK_VERSION);
 
     sl = do_connect(&state);
-    if(sl == NULL) return 1;
+    if (sl == NULL) return 1;
 
     connected_stlink = sl;
     signal(SIGINT, &cleanup);
@@ -238,7 +238,7 @@ int main(int argc, char** argv) {
     current_memory_map = make_memory_map(sl);
 
 #ifdef __MINGW32__
-    WSADATA	wsadata;
+    WSADATA wsadata;
     if (WSAStartup(MAKEWORD(2,2),&wsadata) !=0 ) {
         goto winsock_error;
     }
@@ -248,8 +248,8 @@ int main(int argc, char** argv) {
 
     do {
         if (serve(sl, &state)) {
-	  sleep (1); // don't go bezurk if serve returns with error
-	}
+          sleep (1); // don't go bezurk if serve returns with error
+        }
 
         /* in case serve() changed the connection */
         sl = connected_stlink;

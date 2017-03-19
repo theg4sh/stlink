@@ -7,6 +7,7 @@
 #include <libusb.h>
 #include <errno.h>
 #include <unistd.h>
+#include <ctype.h>
 
 #include "stlink.h"
 
@@ -16,6 +17,8 @@ void _stlink_usb_close(stlink_t* sl) {
     if (!sl)
         return;
 
+    stlink_serial_clear(&sl->serial);
+
     struct stlink_libusb * const handle = sl->backend_data;
     // maybe we couldn't even get the usb device?
     if (handle != NULL) {
@@ -23,7 +26,6 @@ void _stlink_usb_close(stlink_t* sl) {
             libusb_close(handle->usb_handle);
         }
 
-        libusb_exit(handle->libusb_ctx);
         free(handle);
     }
 }
@@ -61,7 +63,7 @@ ssize_t send_recv(struct stlink_libusb* handle, int terminate,
         }
     }
 
-    if ((handle->protocoll == 1) && terminate) {
+    if ((handle->protocoll == STLINK_PROTOCOLL_V1) && terminate) {
         /* Read the SG reply */
         unsigned char sg_buf[13];
         t = libusb_bulk_transfer(handle->usb_handle, handle->ep_rep,
@@ -94,7 +96,7 @@ static int fill_command
     unsigned char* const cmd = sl->c_buf;
     int i = 0;
     memset(cmd, 0, sizeof (sl->c_buf));
-    if(slu->protocoll == 1) {
+    if(slu->protocoll == STLINK_PROTOCOLL_V1) {
         cmd[i++] = 'U';
         cmd[i++] = 'S';
         cmd[i++] = 'B';
@@ -722,7 +724,7 @@ int _stlink_usb_write_reg(stlink_t *sl, uint32_t reg, int idx) {
         printf("[!] send_recv STLINK_DEBUG_WRITEREG\n");
         return (int) size;
     }
-sl->q_len = (int) size;
+    sl->q_len = (int) size;
     stlink_print_data(sl);
 
     return 0;
@@ -759,26 +761,152 @@ static stlink_backend_t _stlink_usb_backend = {
 };
 
 /* unsafe outserial length */
-int stlink_parse_serial(const char *serial, uint8_t *outserial)
+int stlink_parse_serial(const char *serial, uint8_t *outserial, int *new_serial_size)
 {
     /** @todo This is not really portable, as strlen really returns size_t we need to obey and not cast it to a signed type. */
-    int j = (int)strlen(serial);
-    int length = j / 2;  //the length of the destination-array
+    size_t j = strlen(serial);
+    size_t length = j / 2;  //the length of the destination-array
     if ((j % 2 != 0) || (length > STLINK_SERIAL_SIZE)) return -1;
 
-    for(size_t k = 0; j >= 0 && k < STLINK_SERIAL_SIZE; ++k, j -= 2) {
-        // Usage memcpy here is overhead
-        char buffer[3] = { serial[j], serial[j+1], 0 };
-        outserial[length - k] = (uint8_t)strtoul(buffer, NULL, 16);
+    /* Verify that serial is in ascii representation
+       @ref http://www.st.com/resource/en/application_note/cd00169020.pdf */
+    char buffer[3] = { 0, 0, 0};
+    for (size_t k = 0; k<j; ++k) {
+        if ( (serial[k] >= '0' && serial[k] <= '9') ||
+             (isalpha(serial[k]) && tolower(serial[k])>='a' && tolower(serial[k])<='f') )
+            continue;
+        DLOG("Not ascii serial. Raw copy serial.\n");
+        goto rawcopy; // Could not convert non-ascii serial representation to hex
     }
 
+    for (size_t k = 0, f=0; k<length && k<STLINK_SERIAL_SIZE; ++k, ++f, ++f) {
+        // Usage memcpy here is overhead
+        buffer[0] = serial[f];
+        buffer[1] = serial[f+1];
+        outserial[k] = (uint8_t)strtoul(buffer, NULL, 16);
+    }
+    if (new_serial_size != NULL)
+        *new_serial_size=(int)length;
+
     return 0;
+
+rawcopy:
+    for (size_t k = 0; k<j; ++k)
+        outserial[k] = serial[k];
+
+    if (new_serial_size != NULL)
+        *new_serial_size=(int)j;
+
+    return -2;
+}
+
+int stlink_serial_clear(stlink_serial_t *sst)
+{
+    if (sst->data != NULL) {
+        free(sst->data);
+        sst->data = NULL;
+    }
+    sst->size   = 0;
+    sst->format = STSERIALF_UNKNOWN;
+    return 0;
+}
+int stlink_serial_init(stlink_serial_t *sst, enum stlink_serial_format_type format, size_t size)
+{
+    if (size>0) {
+        sst->format = format;
+        sst->size   = size;
+        sst->data   = (uint8_t *)calloc(size, sizeof(uint8_t));
+    }
+    return 0;
+}
+enum stlink_serial_format_type
+stlink_serial_format_detect(const stlink_serial_t *sst)
+{
+    /* @todo: parse data until unprintable chars
+     * like ASCII "3031" is HEX "01" and is BINARY "\x01"
+     */
+    stlink_serial_t probe = {
+        .format=(sst->format==STSERIALF_UNKNOWN ? STSERIALF_BINARY : sst->format),
+        .data=sst->data,
+        .size=sst->size
+    };
+
+    // Check for ascii to hex convertation
+    for(;;) {
+        return STSERIALF_UNKNOWN;
+    }
+
+    probe.format++;
+    if (probe.format == STSERIALF_ASCII)
+        return STSERIALF_ASCII;
+    else
+        return stlink_serial_format_detect(&probe);
+}
+
+int stlink_serial_cmp(const stlink_serial_t *sst_first, stlink_serial_t *sst_second)
+{
+    return 0;
+}
+
+int stlink_serial_convert(const stlink_serial_t *sst_from, stlink_serial_t *sst_to, enum stlink_serial_format_type toformat)
+{
+    if ( (sst_from->format != STSERIALF_BINARY) && (sst_from->size % 2) != 0)
+        return -1;
+
+    // Simple copy "as is"
+    if (sst_from->format == toformat) {
+        sst_to->format = sst_from->format;
+        sst_to->size   = sst_from->size;
+        sst_to->data   = (uint8_t*)malloc(sst_from->size*sizeof(uint8_t));
+        memcpy(sst_to->data, sst_from->data, sst_from->size);
+        //int x;
+        //for(x=0; x<sst_from->size; ++x)
+        //    printf("%02x", sst_from->data[x]);
+        //printf("\n");
+        return 0;
+    }
+    printf("reformat %d -> %d\n", sst_from->format, toformat);
+
+    // Alloc enought size to convering without reallocation
+    ssize_t bufsz = ( (sst_from->format > toformat) ? sst_from->size
+                        : (sst_from->size*2*(toformat - sst_from->format)) );
+    uint8_t *buf = (uint8_t*)calloc(bufsz, sizeof(uint8_t));
+    uint8_t curfmt = sst_from->format;
+
+    memcpy(buf, sst_from->data, sst_from->size);
+
+    if (curfmt>toformat) {
+        for(; curfmt>toformat; --curfmt) {
+            for(int it=0, ot=0; it<bufsz; ++it, ++it, ++ot) {
+                char conv[3] = { buf[it], buf[it+1], 0 };
+                long res = strtol(conv, NULL, 16);
+                buf[ot] = (uint8_t)res;
+            }
+            bufsz /= 2;
+        }
+    } else {
+        for(; curfmt<toformat; ++curfmt) {
+            for(int it=bufsz-1, ot=it*2; it>=0; --it, --ot, --ot) {
+                char conv[3] = { 0, 0, 0 };
+                snprintf(conv, 2, "%2x", buf[it]);
+                buf[ot  ]=conv[1];
+                buf[ot-1]=conv[0];
+            }
+            bufsz *= 2;
+        }
+    }
+    //
+
+    free(buf);
+    return -1;
 }
 
 struct stlink_usr_match_t {
     int devBus;
     int devAddr;
-    uint8_t serial[STLINK_SERIAL_SIZE];
+    stlink_serial_t serial;
+    //uint8_t serial[STLINK_SERIAL_SIZE];
+    //int serial_size;
 };
 
 /* @todo Ready to move out from stlink_open_usb. See comment in stlink_open_usb */
@@ -789,7 +917,7 @@ struct stlink_usr_match_t* _stlink_get_usr_match() {
 
     susm.devBus = 0;
     susm.devAddr = 0;
-    memset(susm.serial, 0x0, sizeof(susm.serial));
+    stlink_serial_clear(&susm.serial);
 
     device = getenv("STLINK_DEVICE");
     serial = getenv("STLINK_SERIAL");
@@ -807,27 +935,271 @@ struct stlink_usr_match_t* _stlink_get_usr_match() {
             return NULL;
         }
         susm.devBus=atoi(device);
-        *c++=0;
-        susm.devAddr=atoi(c);
+        //*c++=0; // unnecessary
+        susm.devAddr=atoi(++c);
         ILOG("bus %03d dev %03d\n", susm.devBus, susm.devAddr);
     }
 
     if (serial) {
-        if (stlink_parse_serial(serial, susm.serial) == -1)
+        DLOG("User serial set: %s\n", serial);
+        const stlink_serial_t sst = { .format=STSERIALF_HEX, .data=(uint8_t*)serial, .size=strlen(serial) };
+        //if (stlink_parse_serial(serial, &susm.serial) == -1)
+        if (stlink_serial_convert(&sst, &susm.serial, STSERIALF_BINARY) == -1)
             return NULL;
     }
 
     return &susm;
 }
 
-stlink_t *stlink_open_usb(enum ugly_loglevel verbose, bool reset, uint8_t serial[STLINK_SERIAL_SIZE])
+
+//static libusb_context  *libusb_ctx=NULL;
+static libusb_device  **libusb_devices=NULL;
+
+static stlink_t       **stlink_devices=NULL;
+static stlink_t       **stlink_device_current=NULL;
+static ssize_t          stlink_devices_count=0;
+
+//static
+ssize_t stlink_init_devices()
+{
+    if (libusb_devices == NULL) {
+        static libusb_context  *libusb_ctx=NULL;
+        if (libusb_init(&libusb_ctx)) {
+            WLOG("failed to init libusb context, wrong version of libraries?\n");
+            return -2;
+        }
+
+        ssize_t cnt = (int) libusb_get_device_list(NULL, &libusb_devices);
+        if (cnt<0)
+            return 0;
+
+        stlink_t **_stlink_devices = NULL;
+        struct  libusb_device_descriptor  desc;
+        struct  libusb_device_handle     *handle = NULL;
+        int     serial_size;
+        uint8_t serial[256];
+        int     config;
+
+        stlink_t *sl = NULL;
+        struct stlink_libusb* slu = NULL;
+
+        ssize_t id;
+        for (id=0; id<cnt; ++id) {
+            int ret = libusb_get_device_descriptor(libusb_devices[id], &desc);
+            if (ret < 0) {
+                WLOG("failed to get libusb device descriptor\n");
+                return -1;
+            }
+
+            if (desc.idVendor != STLINK_USB_VID_ST)
+                continue;
+            if (desc.idProduct != STLINK_USB_PID_STLINK &&
+                desc.idProduct != STLINK_USB_PID_STLINK_32L &&
+                desc.idProduct != STLINK_USB_PID_STLINK_NUCLEO) {
+                WLOG("Unsupported STLINK device: %04x:%04x", desc.idVendor, desc.idProduct);
+                WLOG("Please, contact to owner");
+                continue;
+            }
+
+            ret = libusb_open(libusb_devices[id], &handle);
+            if (ret < 0) {
+                ugly_init(UERROR); /* Don't be silent when error is occured */
+                ELOG("Cannot open device %04x:%04x on %03d:%03d: %s(%d)\n", desc.idVendor, desc.idProduct,
+                        libusb_get_bus_number(libusb_devices[id]), libusb_get_device_address(libusb_devices[id]),
+                        libusb_error_name(ret), ret);
+                continue;
+            }
+
+            memset(serial, 0x0, sizeof(serial));
+            serial_size = libusb_get_string_descriptor_ascii(handle, desc.iSerialNumber,
+                                                             (uint8_t *)serial, sizeof(serial));
+            if (serial_size < 0) {
+                continue;
+            }
+
+            ++stlink_devices_count;
+
+
+
+            sl  = (stlink_t *) calloc(1, sizeof(stlink_t));
+            slu = calloc(1, sizeof (struct stlink_libusb));
+            if (!sl) {
+                return -2;
+            }
+            if (!slu) {
+                free(sl);
+                return -2;
+            }
+            sl->backend = &_stlink_usb_backend;
+            sl->backend_data = slu;
+
+            sl->core_stat = STLINK_CORE_STAT_UNKNOWN;
+
+            // Convert (copy) serial
+            stlink_serial_t ssf = { .format=STSERIALF_BINARY, .data=serial, .size=serial_size };
+            stlink_serial_convert(&ssf, &sl->serial, STSERIALF_BINARY);
+
+            slu->usb_handle = handle;
+            slu->libusb_ctx = libusb_ctx;
+            if (desc.idProduct == STLINK_USB_PID_STLINK) {
+                slu->protocoll = STLINK_PROTOCOLL_V1;
+            }
+
+            if (libusb_kernel_driver_active(slu->usb_handle, 0) == 1) {
+                ret = libusb_detach_kernel_driver(slu->usb_handle, 0);
+                if (ret < 0) {
+                    WLOG("libusb_detach_kernel_driver(() error %s\n", libusb_error_name(ret));
+                    goto on_libusb_error;
+                }
+            }
+
+            if (libusb_get_configuration(slu->usb_handle, &config)) {
+                /* this may fail for a previous configured device */
+                WLOG("libusb_get_configuration()\n");
+                goto on_libusb_error;
+            }
+
+            if (config != 1) {
+                printf("setting new configuration (%d -> 1)\n", config);
+                if (libusb_set_configuration(slu->usb_handle, 1)) {
+                    /* this may fail for a previous configured device */
+                    WLOG("libusb_set_configuration() failed\n");
+                    goto on_libusb_error;
+                }
+            }
+
+            if (libusb_claim_interface(slu->usb_handle, 0)) {
+                WLOG("Stlink usb device found, but unable to claim (probably already in use?)\n");
+                goto on_libusb_error;
+            }
+
+            // TODO - could use the scanning techniq from stm8 code here...
+            slu->ep_rep = 1 /* ep rep */ | LIBUSB_ENDPOINT_IN;
+            if (desc.idProduct == STLINK_USB_PID_STLINK_NUCLEO) {
+                slu->ep_req = 1 /* ep req */ | LIBUSB_ENDPOINT_OUT;
+            } else {
+                slu->ep_req = 2 /* ep req */ | LIBUSB_ENDPOINT_OUT;
+            }
+
+            slu->sg_transfer_idx = 0;
+            // TODO - never used at the moment, always CMD_SIZE
+            slu->cmd_len = (slu->protocoll == STLINK_PROTOCOLL_V1) ? STLINK_SG_SIZE : STLINK_CMD_SIZE;
+
+            if (stlink_current_mode(sl) == STLINK_DEV_DFU_MODE) {
+                ILOG("-- exit_dfu_mode\n");
+                stlink_exit_dfu_mode(sl);
+            }
+
+            if (stlink_current_mode(sl) != STLINK_DEV_DEBUG_MODE) {
+                stlink_enter_swd_mode(sl);
+            }
+
+            // Initialize stlink version (sl->version)
+            stlink_version(sl);
+
+
+
+            _stlink_devices = (stlink_t **)realloc(_stlink_devices, sizeof(stlink_t *) * (stlink_devices_count+1));
+            if (!_stlink_devices) {
+                stlink_close(sl);
+                return -2;
+            }
+            _stlink_devices[stlink_devices_count]   = NULL;
+            _stlink_devices[stlink_devices_count-1] = sl;
+        }
+        if (stlink_devices_count>0) {
+            stlink_devices = _stlink_devices;
+        }
+    }
+on_libusb_error:
+    return stlink_devices_count;
+}
+
+//static
+ssize_t stlink_get_devices(stlink_t ***devs)
+{
+    if (devs != NULL)
+        *devs = stlink_devices;
+    return stlink_devices_count;
+}
+
+//static
+stlink_t* stlink_device_next()
+{
+    if (stlink_device_current == NULL) {
+        stlink_device_current = stlink_devices;
+        return *stlink_device_current;
+    }
+    if (*stlink_device_current == NULL)
+        return NULL;
+    return *(++stlink_device_current);
+}
+
+//static
+void stlink_devices_rewind()
+{
+    stlink_device_current = NULL;
+}
+
+//static
+void stlink_free_devices()
+{
+    struct libusb_context *libusb_ctx = NULL;
+    if (stlink_devices) {
+        stlink_t **sl;
+        for(sl = stlink_devices; *sl != NULL; ++sl) {
+            struct stlink_libusb *slu = (*sl)->backend_data;
+            printf("STLINK V%d", (*sl)->version.stlink_v);
+            if (slu->protocoll == STLINK_PROTOCOLL_V1) {
+                if( (*sl)->version.stlink_v > 1 )
+                    stlink_jtag_reset(sl, 2);
+                stlink_reset(*sl);
+                stlink_exit_debug_mode(*sl);
+            }
+            libusb_ctx = slu->libusb_ctx;
+            stlink_close(*sl);
+        }
+        free(stlink_devices);
+        stlink_devices = NULL;
+    }
+
+    stlink_devices_count = 0;
+
+    if (libusb_devices) {
+        libusb_free_device_list(libusb_devices, 1);
+        libusb_devices = NULL;
+    }
+
+    //libusb_exit(NULL);
+    if (libusb_ctx)
+        libusb_exit(libusb_ctx);
+}
+
+
+stlink_t *stlink_open_usb(enum ugly_loglevel verbose, bool reset, const stlink_serial_t *serial)
 {
     stlink_t* sl = NULL;
     struct stlink_libusb* slu = NULL;
     int ret = -1;
     int config;
 
-    sl = calloc(1, sizeof (stlink_t));
+    stlink_init_devices();
+    stlink_devices_rewind();
+    while ((sl = stlink_device_next()) != NULL) {
+        printf("Device iterate %p\n", sl);
+        if (serial->size == 0)
+            break;
+        if (serial->size == sl->serial.size &&
+            memcmp(serial->data, sl->serial.data, sl->serial.size) == 0)
+            break;
+    }
+    if (!sl) {
+        stlink_free_devices();
+        sl = NULL;
+    }
+    return sl;
+
+    sl  = calloc(1, sizeof (stlink_t));
     slu = calloc(1, sizeof (struct stlink_libusb));
     if (sl == NULL)
         goto on_malloc_error;
@@ -846,18 +1218,20 @@ stlink_t *stlink_open_usb(enum ugly_loglevel verbose, bool reset, uint8_t serial
 
     libusb_device **list;
     /** @todo We should use ssize_t and use it as a counter if > 0. As per libusb API: ssize_t libusb_get_device_list (libusb_context *ctx, libusb_device ***list) */
-    int cnt = (int) libusb_get_device_list(slu->libusb_ctx, &list);
+    ssize_t cnt = (int) libusb_get_device_list(slu->libusb_ctx, &list);
     struct libusb_device_descriptor desc;
 
     /* @TODO: Reading a environment variable in a usb open function is not very nice, this
       should be refactored and moved into the CLI tools, and instead of giving USB_BUS:USB_ADDR a real stlink
       serial string should be passed to this function. Probably people are using this but this is very odd because
       as programmer can change to multiple busses and it is better to detect them based on serial.  */
-    const struct stlink_usr_match_t *susm = _stlink_get_usr_match();
+    struct stlink_usr_match_t *susm = _stlink_get_usr_match();
     if (susm == NULL)
         goto on_error;
+    if (serial && serial->size>0)
+        stlink_serial_convert(serial, &susm->serial, STSERIALF_BINARY);
 
-    while (cnt--) {
+    while (cnt-->0) {
         libusb_get_device_descriptor( list[cnt], &desc );
         if (susm->devBus && susm->devAddr) {
             if ((libusb_get_bus_number(list[cnt]) != susm->devBus)
@@ -874,7 +1248,9 @@ stlink_t *stlink_open_usb(enum ugly_loglevel verbose, bool reset, uint8_t serial
                 continue;
         }
 
-        if ((desc.idProduct == STLINK_USB_PID_STLINK_32L) || (desc.idProduct == STLINK_USB_PID_STLINK_NUCLEO)) {
+        if ((desc.idProduct == STLINK_USB_PID_STLINK) ||
+            (desc.idProduct == STLINK_USB_PID_STLINK_32L) ||
+            (desc.idProduct == STLINK_USB_PID_STLINK_NUCLEO)) {
             struct libusb_device_handle *handle;
 
             ret = libusb_open(list[cnt], &handle);
@@ -887,36 +1263,65 @@ stlink_t *stlink_open_usb(enum ugly_loglevel verbose, bool reset, uint8_t serial
                 continue;
             }
 
-            sl->serial_size = libusb_get_string_descriptor_ascii(handle, desc.iSerialNumber,
-                                                                 (unsigned char *)sl->serial, sizeof(sl->serial));
+            uint8_t serial_buf[256];
+            int serial_size;
+
+            memset(serial_buf, 0x0, sizeof(serial_buf));
+            serial_size = libusb_get_string_descriptor_ascii(handle, desc.iSerialNumber,
+                                                             (uint8_t *)serial_buf, sizeof(serial_buf));
+
+            if (serial_size==12 && memcmp(serial_buf, "000000000001", 12)==0) {
+                reset = 2;
+            }
+
             libusb_close(handle);
 
-            if (sl->serial_size < 0)
+            if (serial_size < 0)
                 continue;
 
+            // Set protocoll version before possible breaks
+            slu->protocoll = STLINK_PROTOCOLL_V2;
+            if (desc.idProduct == STLINK_USB_PID_STLINK) {
+                slu->protocoll = STLINK_PROTOCOLL_V1;
+            }
+
+            const stlink_serial_t devserial = { .format=(desc.idProduct==STLINK_USB_PID_STLINK ? STSERIALF_BINARY : STSERIALF_HEX), .data=serial_buf, .size=serial_size };
+            //stlink_parse_serial((const char *)sl->serial, sl->serial, &sl->serial_size);
+            stlink_serial_convert(&devserial, &sl->serial, STSERIALF_BINARY);
+
+            if (serial) {
+                printf("serial: "); for(unsigned int x=0; x<serial->size; ++x)
+                    { printf("%02x", serial->data[x]); } printf("\n");
+            }
+            printf("sl->serial: "); for(unsigned int x=0; x<sl->serial.size; ++x)
+                { printf("%02x", sl->serial.data[x]); } printf("\n");
+            printf("susm->serial: "); for(unsigned int x=0; x<susm->serial.size; ++x)
+                { printf("%02x", susm->serial.data[x]); } printf("\n");
+
             // Match user's serial
-            if (*susm->serial) {
-                if (memcmp(susm->serial, sl->serial, sl->serial_size) == 0)
+            if (susm->serial.size>0) {
+                if (susm->serial.size == sl->serial.size &&
+                    memcmp(susm->serial.data, sl->serial.data, sl->serial.size) == 0)
                     break;
-            } else if ((serial == NULL) || (*serial == 0))
+            } else if (susm->serial.size == 0)
+            // else if ((serial == NULL) || (serial->size == 0))
                 break;
 
-            if (serial && memcmp(serial, &sl->serial, sl->serial_size) == 0)
+            /*
+            if (serial &&
+                (serial->size == sl->serial.size) &&
+                (memcmp(serial->data, &sl->serial.data, sl->serial.size) == 0))
                 break;
+            */
 
             if (susm->devBus && susm->devAddr) goto on_error;
             else continue;
-        }
-
-        if (desc.idProduct == STLINK_USB_PID_STLINK) {
-            slu->protocoll = 1;
-            break;
         }
     }
 
     if (cnt < 0) {
         ugly_init(UWARN); /* Don't be silent when error is occured */
-        WLOG ("Couldn't find %s ST-Link/V2 devices\n", ((susm->devBus && susm->devAddr) || (*susm->serial))?"matched":"any");
+        WLOG ("Couldn't find %s ST-Link/V2 devices\n", ((susm->devBus && susm->devAddr) || (susm->serial.size))?"matched":"any");
         goto on_error;
     } else {
         ret = libusb_open(list[cnt], &slu->usb_handle);
@@ -969,22 +1374,23 @@ stlink_t *stlink_open_usb(enum ugly_loglevel verbose, bool reset, uint8_t serial
 
     slu->sg_transfer_idx = 0;
     // TODO - never used at the moment, always CMD_SIZE
-    slu->cmd_len = (slu->protocoll == 1)? STLINK_SG_SIZE: STLINK_CMD_SIZE;
+    slu->cmd_len = (slu->protocoll == STLINK_PROTOCOLL_V1) ? STLINK_SG_SIZE : STLINK_CMD_SIZE;
 
-    if (stlink_current_mode(sl) == STLINK_DEV_DFU_MODE) {
+    int curmode = stlink_current_mode(sl);
+    if (curmode == STLINK_DEV_DFU_MODE) {
         ILOG("-- exit_dfu_mode\n");
         stlink_exit_dfu_mode(sl);
     }
-
-    if (stlink_current_mode(sl) != STLINK_DEV_DEBUG_MODE) {
+    if (curmode != STLINK_DEV_DEBUG_MODE) {
         stlink_enter_swd_mode(sl);
     }
-	
-    // Initialize stlink version (sl->version)	
-    stlink_version(sl);	
+
+    // Initialize stlink version (sl->version)
+    stlink_version(sl);
 
     if (reset) {
-        if( sl->version.stlink_v > 1 ) stlink_jtag_reset(sl, 2);
+        if( sl->version.stlink_v > 1 )
+            stlink_jtag_reset(sl, 2);
         stlink_reset(sl);
         usleep(10000);
     }
@@ -1017,26 +1423,26 @@ on_malloc_error:
 
 static size_t stlink_probe_usb_devs(libusb_device **devs, stlink_t **sldevs[]) {
     stlink_t **_sldevs;
-    libusb_device *dev;
     int i = 0;
     int ret = 0;
     size_t slcnt = 0;
     size_t slcur = 0;
 
     /* Count stlink */
-    while ((dev = devs[i++]) != NULL) {
+    for (i=0; devs[i] != NULL; ++i) {
         struct libusb_device_descriptor desc;
-        int r = libusb_get_device_descriptor(dev, &desc);
+        int r = libusb_get_device_descriptor(devs[i], &desc);
         if (r < 0) {
             WLOG("failed to get libusb device descriptor\n");
             break;
         }
 
-        if (desc.idProduct != STLINK_USB_PID_STLINK_32L &&
-            desc.idProduct != STLINK_USB_PID_STLINK_NUCLEO)
-            continue;
-
-        slcnt++;
+        if (desc.idProduct == STLINK_USB_PID_STLINK &&
+            desc.idProduct == STLINK_USB_PID_STLINK_32L &&
+            desc.idProduct == STLINK_USB_PID_STLINK_NUCLEO)
+            ++slcnt;
+        else if (desc.idVendor == STLINK_USB_VID_ST)
+            WLOG("unsupported stlink device %04x:%04x", desc.idVendor, desc.idProduct);
     }
 
     /* Allocate list of pointers */
@@ -1047,37 +1453,43 @@ static size_t stlink_probe_usb_devs(libusb_device **devs, stlink_t **sldevs[]) {
     }
 
     /* Open stlinks and attach to list */
-    i = 0;
-    while ((dev = devs[i++]) != NULL) {
+    for (i=0; devs[i] != NULL; ++i) {
         struct libusb_device_descriptor desc;
-        ret = libusb_get_device_descriptor(dev, &desc);
+        ret = libusb_get_device_descriptor(devs[i], &desc);
         if (ret < 0) {
             WLOG("failed to get libusb device descriptor\n");
             break;
         }
 
-        if (desc.idProduct != STLINK_USB_PID_STLINK_32L &&
+        if (desc.idProduct != STLINK_USB_PID_STLINK &&
+            desc.idProduct != STLINK_USB_PID_STLINK_32L &&
             desc.idProduct != STLINK_USB_PID_STLINK_NUCLEO)
             continue;
 
         struct libusb_device_handle* handle;
-        uint8_t serial[STLINK_SERIAL_SIZE];
-        memset(serial, 0, sizeof(serial));
-
-        ret = libusb_open(dev, &handle);
+        ret = libusb_open(devs[i], &handle);
         if (ret < 0) {
             WLOG("failed to get libusb device descriptor\n");
             break;
         }
 
-        ret = libusb_get_string_descriptor_ascii(handle, desc.iSerialNumber, (unsigned char *)&serial, sizeof(serial));
-        if (ret < 0)
-          *serial = 0;
+        uint8_t serial_buf[256];
+        stlink_serial_t sst;
+        memset(&sst, 0, sizeof(sst));
 
+        ret = libusb_get_string_descriptor_ascii(handle, desc.iSerialNumber, serial_buf, sizeof(serial_buf));
+        stlink_serial_clear(&sst);
+        if (ret >= 0) {
+            //stlink_serial_init(&sst, STSERIALF_HEX, ret);
+            stlink_serial_t ssf = { .format=STSERIALF_BINARY, .data=serial_buf, .size=ret };
+            stlink_serial_convert(&ssf, &sst, STSERIALF_BINARY);
+        }
         libusb_close(handle);
 
         stlink_t *sl = NULL;
-        sl = stlink_open_usb(0, 1, serial);
+        sl = stlink_open_usb(0, 1, &sst);
+
+        //stlink_serial_clear(&sst);
         if (!sl)
             continue;
 

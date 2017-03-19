@@ -13,8 +13,6 @@ static bool starts_with(const char * str, const char * prefix) {
 
 int flash_get_opts(struct flash_opts* o, int ac, char** av)
 {
-    bool serial_specified = false;
-
     // defaults
 
     memset(o, 0, sizeof(*o));
@@ -45,10 +43,9 @@ int flash_get_opts(struct flash_opts* o, int ac, char** av)
                 serial = av[0] + strlen("--serial=");
             }
 
-            if (stlink_parse_serial(serial, o->serial) == -1)
+            const stlink_serial_t sst = { .format=STSERIALF_HEX, .data=(uint8_t*)serial, .size=strlen(serial) };
+            if (stlink_serial_convert(&sst, &o->serial, STSERIALF_BINARY) == -1)
                 return -1;
-
-            serial_specified = true;
         }
         else if (strcmp(av[0], "--format") == 0 || starts_with(av[0], "--format=")) {
             const char * format;
@@ -152,7 +149,7 @@ int flash_get_opts(struct flash_opts* o, int ac, char** av)
 
     // some constistence checks
     
-    if(serial_specified && o->devname != NULL) return -1; // serial not supported for v1
+    if(o->serial.size>0 && o->devname != NULL) return -1; // serial not supported for v1
 
     return 0;
 }

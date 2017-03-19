@@ -19,7 +19,7 @@ static void usage(void)
 }
 
 /* Print normal or OpenOCD hla_serial with newline */
-static void stlink_print_serial(stlink_t *sl, bool openocd)
+static void stlink_print_serial(const stlink_t *sl, const bool openocd)
 {
     const char *fmt;
 
@@ -30,21 +30,23 @@ static void stlink_print_serial(stlink_t *sl, bool openocd)
        fmt = "%02x";
     }
 
-    for (int n = 0; n < sl->serial_size; n++)
-        printf(fmt, sl->serial[n]);
+    for (unsigned int n = 0; n < sl->serial.size; ++n)
+        printf(fmt, sl->serial.data[n]);
 
     if (openocd)
        printf("\"");
     printf("\n");
 }
 
-static void stlink_print_info(stlink_t *sl)
+static void stlink_print_info(const stlink_t *sl)
 {
     const struct stlink_chipid_params *params = NULL;
 
     if (!sl)
         return;
 
+    printf("\n"); // Separator
+    printf("version: v%d\n", ((struct stlink_libusb *)sl->backend_data)->protocoll==STLINK_PROTOCOLL_V1 ? 1 : 2);
     printf(" serial: ");
     stlink_print_serial(sl, false);
     printf("openocd: ");
@@ -63,17 +65,15 @@ static void stlink_print_info(stlink_t *sl)
 
 static void stlink_probe(void)
 {
-    stlink_t **stdevs;
     size_t size;
 
-    size = stlink_probe_usb(&stdevs);
-
+    size = stlink_init_devices();
     printf("Found %u stlink programmers\n", (unsigned int)size);
 
-    for (size_t n = 0; n < size; n++)
-        stlink_print_info(stdevs[n]);
-
-    stlink_probe_usb_free(&stdevs, size);
+    stlink_t *sl;
+    while ((sl = stlink_device_next()) != NULL)
+        stlink_print_info(sl);
+    stlink_free_devices();
 }
 
 static stlink_t *stlink_open_first(void)

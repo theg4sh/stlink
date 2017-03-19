@@ -26,6 +26,10 @@ extern "C" {
 #define STLINK_SG_SIZE 31
 #define STLINK_CMD_SIZE 16
 
+#define STLINK_PROTOCOLL_V1   0x00010000
+#define STLINK_PROTOCOLL_V2   0x00020000
+#define STLINK_PROTOCOLL_V2_1 0x00020001
+
     struct stlink_libusb {
         libusb_context* libusb_ctx;
         libusb_device_handle* usb_handle;
@@ -44,9 +48,19 @@ extern "C" {
      * @retval NULL   Error while opening the stlink
      * @retval !NULL  Stlink found and ready to use
      */
-    stlink_t *stlink_open_usb(enum ugly_loglevel verbose, bool reset, uint8_t serial[STLINK_SERIAL_SIZE]);
-    size_t stlink_probe_usb(stlink_t **stdevs[]);
-    void stlink_probe_usb_free(stlink_t **stdevs[], size_t size);
+    //stlink_t *stlink_open_usb(enum ugly_loglevel verbose, bool reset, uint8_t serial[STLINK_SERIAL_SIZE]);
+    stlink_t *stlink_open_usb(enum ugly_loglevel verbose, bool reset, const stlink_serial_t *serial);
+    size_t    stlink_probe_usb(stlink_t **stdevs[]);
+    void      stlink_probe_usb_free(stlink_t **stdevs[], size_t size);
+
+    int stlink_serial_convert(const stlink_serial_t *sst_from, stlink_serial_t *sst_to, enum stlink_serial_format_type toformat);
+    int stlink_serial_init(stlink_serial_t *sst, enum stlink_serial_format_type format, size_t size);
+    int stlink_serial_clear(stlink_serial_t *sst);
+
+    ssize_t stlink_init_devices();
+    stlink_t* stlink_device_next();
+    void stlink_devices_rewind();
+    void stlink_free_devices();
 
 #ifdef __cplusplus
 }

@@ -46,7 +46,7 @@ static bool execute_test(const struct Test * test) {
     if(ret && (res == 0)) {
         ret &= (opts.cmd == test->opts.cmd);
         ret &= cmp_strings(opts.devname, test->opts.devname);
-        ret &= cmp_mem(opts.serial, test->opts.serial, sizeof(opts.serial));
+        ret &= (opts.serial.size==test->opts.serial.size) && cmp_mem(opts.serial.data, test->opts.serial.data, opts.serial.size);
         ret &= cmp_strings(opts.filename, test->opts.filename);
         ret &= (opts.addr == test->opts.addr);
         ret &= (opts.size == test->opts.size);
@@ -87,10 +87,10 @@ static struct Test tests[] = {
     { "--debug --reset --format=ihex write test.hex 0x80000000", -1, FLASH_OPTS_INITIALIZER },
     { "--debug --reset write test.hex sometext", -1, FLASH_OPTS_INITIALIZER },
     { "--serial A1020304 erase", 0,
-        { .cmd = FLASH_CMD_ERASE, .devname = NULL, .serial = "\0\0\0\0\0\0\0\0\xA1\x02\x03\x04", .filename = NULL,
+        { .cmd = FLASH_CMD_ERASE, .devname = NULL, .serial = { .format=STSERIALF_BINARY, .data=(uint8_t*)"\xA1\x02\x03\x04", .size=4 }, .filename = NULL,
           .addr = 0, .size = 0, .reset = 0, .log_level = STND_LOG_LEVEL, .format = FLASH_FORMAT_BINARY } },
     { "--serial=A1020304 erase", 0,
-        { .cmd = FLASH_CMD_ERASE, .devname = NULL, .serial = "\0\0\0\0\0\0\0\0\xA1\x02\x03\x04", .filename = NULL,
+        { .cmd = FLASH_CMD_ERASE, .devname = NULL, .serial = { .format=STSERIALF_BINARY, .data=(uint8_t*)"\xA1\x02\x03\x04", .size=4 }, .filename = NULL,
           .addr = 0, .size = 0, .reset = 0, .log_level = STND_LOG_LEVEL, .format = FLASH_FORMAT_BINARY } },
 };
 
