@@ -1646,7 +1646,7 @@ int stlink_verify_write_flash(stlink_t *sl, stm32_addr_t address, uint8_t *data,
         stlink_read_mem32(sl, address + (uint32_t) off, aligned_size);
 
         if (memcmp(sl->q_buf, data + off, cmp_size)) {
-	  ELOG("Verification of flash failed at offset: %u\n", (unsigned int)off);
+            ELOG("Verification of flash failed at offset: %u\n", (unsigned int)off);
             return -1;
         }
     }
@@ -1779,8 +1779,8 @@ int stlink_write_flash(stlink_t *sl, stm32_addr_t addr, uint8_t* base, uint32_t 
 
         /* TODO: Check that Voltage range is 2.7 - 3.6 V */
         if ((sl->chip_id != STLINK_CHIPID_STM32_L4) &&
-	    (sl->chip_id != STLINK_CHIPID_STM32_L43X))
-	  {
+            (sl->chip_id != STLINK_CHIPID_STM32_L43X))
+          {
             if( sl->version.stlink_v == 1 ) {
                 printf("STLINK V1 cannot read voltage, defaulting to 32-bit writes on F4 devices\n");
                 write_flash_cr_psiz(sl, 2);
@@ -1888,7 +1888,7 @@ int stlink_write_flash(stlink_t *sl, stm32_addr_t addr, uint8_t* base, uint32_t 
             if ((off % sl->flash_pgsz) > (sl->flash_pgsz -5)) {
                 fprintf(stdout, "\r%3u/%3u pages written",
                         (unsigned int)(off/sl->flash_pgsz),
-			(unsigned int)(len/sl->flash_pgsz));
+                        (unsigned int)(len/sl->flash_pgsz));
                 fflush(stdout);
             }
 
